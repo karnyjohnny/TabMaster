@@ -1,0 +1,8 @@
+{
+  "name": "TabMaster - Win7 Alt+Tab & Process Manager in Pure C",
+  "description": "Ultraniskopoziomowy, bezopóźnieniowy zamiennik Alt+Tab i menedżer procesów Dark Mode dla Windows 7 x64/x86 w czystym C (WinAPI) zoptymalizowany pod leciwy sprzęt.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
