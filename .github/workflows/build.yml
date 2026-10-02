@@ -1,0 +1,61 @@
+name: Build TabMaster Windows x64
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up MinGW (w64devkit equivalent)
+      uses: hendrikmi/gha-setup-mingw@v2
+      with:
+        version: 13.2.0
+        architecture: x86_64
+
+    - name: Compile Resources and Source with GCC
+      shell: bash
+      run: |
+        # Sprawdzenie struktury (czy pliki są w katalogu src czy w głównym)
+        SRCDIR="."
+        if [ -d "src" ]; then
+          SRCDIR="src"
+        fi
+
+        echo "[1/2] Compiling Windows Resources..."
+        windres -O coff "$SRCDIR/resource.rc" -o resource.o
+
+        echo "[2/2] Compiling C Source with extreme size optimizations..."
+        gcc -Os -s -Wall -Wextra -std=c99 -mwindows \
+            -fno-ident -fno-asynchronous-unwind-tables \
+            -ffunction-sections -fdata-sections \
+            -I"$SRCDIR" \
+            -o tabmaster.exe "$SRCDIR/main.c" resource.o \
+            -Wl,--gc-sections -Wl,--subsystem,windows \
+            -luser32 -lgdi32 -lpsapi -ldwmapi -lkernel32 -lshell32 -ladvapi32
+
+        echo "Build completed successfully!"
+
+    - name: Upload compiled binary as Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: TabMaster-Win7-x64
+        path: tabmaster.exe
+
+    - name: Create GitHub Release on Tag
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/v')
+      with:
+        files: tabmaster.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
