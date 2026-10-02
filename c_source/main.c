@@ -395,7 +395,36 @@ void ShowSwitcher(void) {
     posX = (screenW - UI_WIDTH) / 2;
     posY = (screenH - UI_HEIGHT) / 2;
 
-    SetWindowPos(g_app.hMainWnd, HWND_TOPMOST, posX, posY, UI_WIDTH, UI_HEIGHT, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    /* Identify currently focused window in the OS (e.g. Discord, Chrome) */
+    HWND hCurFore = GetForegroundWindow();
+    DWORD dwForeThread = hCurFore ? GetWindowThreadProcessId(hCurFore, NULL) : 0;
+    DWORD dwCurThread = GetCurrentThreadId();
+
+    /* 1. Attach input queue to steal foreground cleanly in Windows 7 */
+    if (dwForeThread != 0 && dwForeThread != dwCurThread) {
+        AttachThreadInput(dwCurThread, dwForeThread, TRUE);
+    }
+
+    /* 2. Temporarily unlock foreground lock timeout */
+    DWORD dwLockTimeout = 0;
+    SystemParametersInfoW(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &dwLockTimeout, 0);
+    SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, (void*)0, SPIF_SENDCHANGE);
+
+    /* 3. Position and show window (activating it directly, NO SWP_NOACTIVATE!) */
+    SetWindowPos(g_app.hMainWnd, HWND_TOPMOST, posX, posY, UI_WIDTH, UI_HEIGHT, SWP_SHOWWINDOW);
+    ShowWindow(g_app.hMainWnd, SW_SHOW);
+    BringWindowToTop(g_app.hMainWnd);
+    SetForegroundWindow(g_app.hMainWnd);
+    SetActiveWindow(g_app.hMainWnd);
+    SetFocus(g_app.hMainWnd);
+
+    /* 4. Restore lock timeout */
+    SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, (void*)(DWORD_PTR)dwLockTimeout, SPIF_SENDCHANGE);
+
+    /* 5. Detach thread input */
+    if (dwForeThread != 0 && dwForeThread != dwCurThread) {
+        AttachThreadInput(dwCurThread, dwForeThread, FALSE);
+    }
 
     g_app.is_visible = TRUE;
     ResetSearch();
@@ -406,11 +435,6 @@ void ShowSwitcher(void) {
     } else {
         g_app.selected_index = 0;
     }
-
-    /* Force foreground activation */
-    SetForegroundWindow(g_app.hMainWnd);
-    SetActiveWindow(g_app.hMainWnd);
-    SetFocus(g_app.hMainWnd);
 
     InvalidateRect(g_app.hMainWnd, NULL, FALSE);
 }
@@ -445,21 +469,31 @@ void SwitchToSelected(void) {
         /* Windows 7 Foreground Lockout Bypass Trick:
            Attach thread input between foreground window and current thread */
         HWND hCurFore = GetForegroundWindow();
-        DWORD dwForeThread = GetWindowThreadProcessId(hCurFore, NULL);
+        DWORD dwForeThread = hCurFore ? GetWindowThreadProcessId(hCurFore, NULL) : 0;
         DWORD dwCurThread = GetCurrentThreadId();
 
-        if (dwForeThread != dwCurThread) {
+        if (dwForeThread != 0 && dwForeThread != dwCurThread) {
             AttachThreadInput(dwCurThread, dwForeThread, TRUE);
         }
 
+        DWORD dwLockTimeout = 0;
+        SystemParametersInfoW(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &dwLockTimeout, 0);
+        SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, (void*)0, SPIF_SENDCHANGE);
+
         if (IsIconic(hwndTarget)) {
             ShowWindow(hwndTarget, SW_RESTORE);
+        } else {
+            ShowWindow(hwndTarget, SW_SHOW);
         }
 
-        SetForegroundWindow(hwndTarget);
         BringWindowToTop(hwndTarget);
+        SetForegroundWindow(hwndTarget);
+        SetActiveWindow(hwndTarget);
+        SetFocus(hwndTarget);
 
-        if (dwForeThread != dwCurThread) {
+        SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, (void*)(DWORD_PTR)dwLockTimeout, SPIF_SENDCHANGE);
+
+        if (dwForeThread != 0 && dwForeThread != dwCurThread) {
             AttachThreadInput(dwCurThread, dwForeThread, FALSE);
         }
     }
@@ -501,7 +535,7 @@ void ToggleMode(void) {
 }
 
 /* ========================================================================= */
-/* Low-Level Keyboard Hook (Instant Alt+Tab Interception)                    */
+/* Low-Level Keyboard Hook (Instant Alt+Tab Interception & Exclusive Input)  */
 /* ========================================================================= */
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -509,7 +543,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         KBDLLHOOKSTRUCT* pKbd = (KBDLLHOOKSTRUCT*)lParam;
         BOOL bAltPressed = (pKbd->flags & LLKHF_ALTDOWN) != 0 || (GetKeyState(VK_MENU) & 0x8000) != 0;
 
-        /* Intercept Alt+Tab */
+        /* 1. Intercept Alt+Tab */
         if (pKbd->vkCode == VK_TAB && bAltPressed) {
             if (wParam == WM_SYSKEYDOWN || wParam == WM_KEYDOWN) {
                 g_app.alt_is_down = TRUE;
@@ -536,7 +570,77 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             }
         }
 
-        /* Check if Alt is released */
+        /* 2. When TabMaster is VISIBLE: Intercept and consume all navigation keys!
+              This guarantees that NO keystroke ever leaks to Discord/Chrome! */
+        if (g_app.is_visible) {
+            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+                switch (pKbd->vkCode) {
+                    case VK_UP:
+                        if (g_app.selected_index > 0) {
+                            g_app.selected_index--;
+                            UpdateFilteredList();
+                            InvalidateRect(g_app.hMainWnd, NULL, FALSE);
+                        }
+                        return 1; /* Consumed! */
+
+                    case VK_DOWN:
+                        if (g_app.selected_index < g_app.filtered_count - 1) {
+                            g_app.selected_index++;
+                            UpdateFilteredList();
+                            InvalidateRect(g_app.hMainWnd, NULL, FALSE);
+                        }
+                        return 1; /* Consumed! */
+
+                    case VK_LEFT:
+                        SetMode(MODE_WINDOWS);
+                        return 1; /* Consumed! */
+
+                    case VK_RIGHT:
+                        SetMode(MODE_PROCESSES);
+                        return 1; /* Consumed! */
+
+                    case VK_RETURN:
+                        SwitchToSelected();
+                        return 1; /* Consumed! */
+
+                    case VK_DELETE:
+                        KillSelectedProcess();
+                        return 1; /* Consumed! */
+
+                    case VK_ESCAPE:
+                        HideSwitcher();
+                        return 1; /* Consumed! */
+
+                    case VK_BACK:
+                        if (g_app.search_query_len > 0) {
+                            g_app.search_query[--g_app.search_query_len] = L'\0';
+                            UpdateFilteredList();
+                            InvalidateRect(g_app.hMainWnd, NULL, FALSE);
+                        }
+                        return 1; /* Consumed! */
+                }
+
+                /* Real-time search typing inside hook if no Ctrl/Alt modifier */
+                if (!(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
+                    BYTE kbdState[256];
+                    GetKeyboardState(kbdState);
+                    WCHAR wch[4] = {0};
+                    if (ToUnicode(pKbd->vkCode, pKbd->scanCode, kbdState, wch, 4, 0) > 0) {
+                        if (wch[0] >= 32) {
+                            if (g_app.search_query_len < MAX_SEARCH_LEN - 1) {
+                                g_app.search_query[g_app.search_query_len++] = wch[0];
+                                g_app.search_query[g_app.search_query_len] = L'\0';
+                                UpdateFilteredList();
+                                InvalidateRect(g_app.hMainWnd, NULL, FALSE);
+                            }
+                            return 1; /* Consumed! */
+                        }
+                    }
+                }
+            }
+        }
+
+        /* 3. Check if Alt is released */
         if (pKbd->vkCode == VK_MENU || pKbd->vkCode == VK_LMENU || pKbd->vkCode == VK_RMENU) {
             if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
                 if (g_app.is_visible && g_app.alt_is_down) {
@@ -811,10 +915,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_ACTIVATE: {
-            if (LOWORD(wParam) == WA_INACTIVE) {
-                /* If window loses focus, close cleanly */
-                HideSwitcher();
-            }
+            /* Do not auto-hide on WA_INACTIVE while switcher is open in Alt+Tab mode,
+               preventing focus jitter from dismissing the switcher unexpectedly */
             return 0;
         }
 
@@ -868,7 +970,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_CHAR: {
-            /* Handle live search typing */
+            /* Handle live search typing if window has direct message focus */
             WCHAR ch = (WCHAR)wParam;
             if (((ch >= 32 && ch < 127) || (ch > 127))) {
                 if (g_app.search_query_len < MAX_SEARCH_LEN - 1) {
@@ -1098,7 +1200,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     /* Start Background Worker Thread */
     g_app.hCacheThread = CreateThread(NULL, 0, CacheThreadProc, NULL, 0, NULL);
 
-    /* Register Low-Level Keyboard Hook (Captures Alt+Tab) */
+    /* Register Low-Level Keyboard Hook (Captures Alt+Tab and all switcher controls) */
     g_app.hKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
 
     /* Standard Message Loop */

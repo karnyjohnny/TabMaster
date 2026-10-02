@@ -222,8 +222,8 @@ void FreeGdiResources(void);
   {
     filename: 'main.c',
     language: 'c',
-    description: 'Kompletny kod źródłowy C z poprawkami dla w64devkit/MinGW: SeDebugPrivilege, LoadIconW/LoadCursorW, nawiasami i trikiem AttachThreadInput',
-    size: '18.6 KB',
+    description: 'Kompletny kod źródłowy C z gwarancją przechwycenia focusu (AttachThreadInput + konsumpcja klawiszy w hooku WH_KEYBOARD_LL)',
+    size: '19.8 KB',
     content: `/**
  * TabMaster - Ultra-Lightweight Alt+Tab & Process Manager for Windows 7 (x64/x86)
  * Target Hardware: Intel Core 2 Duo, 2 GB RAM, Intel GMA 4500MHD
@@ -556,7 +556,30 @@ void ShowSwitcher(void) {
     posX = (screenW - UI_WIDTH) / 2;
     posY = (screenH - UI_HEIGHT) / 2;
 
-    SetWindowPos(g_app.hMainWnd, HWND_TOPMOST, posX, posY, UI_WIDTH, UI_HEIGHT, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    HWND hCurFore = GetForegroundWindow();
+    DWORD dwForeThread = hCurFore ? GetWindowThreadProcessId(hCurFore, NULL) : 0;
+    DWORD dwCurThread = GetCurrentThreadId();
+
+    if (dwForeThread != 0 && dwForeThread != dwCurThread) {
+        AttachThreadInput(dwCurThread, dwForeThread, TRUE);
+    }
+
+    DWORD dwLockTimeout = 0;
+    SystemParametersInfoW(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &dwLockTimeout, 0);
+    SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, (void*)0, SPIF_SENDCHANGE);
+
+    SetWindowPos(g_app.hMainWnd, HWND_TOPMOST, posX, posY, UI_WIDTH, UI_HEIGHT, SWP_SHOWWINDOW);
+    ShowWindow(g_app.hMainWnd, SW_SHOW);
+    BringWindowToTop(g_app.hMainWnd);
+    SetForegroundWindow(g_app.hMainWnd);
+    SetActiveWindow(g_app.hMainWnd);
+    SetFocus(g_app.hMainWnd);
+
+    SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, (void*)(DWORD_PTR)dwLockTimeout, SPIF_SENDCHANGE);
+
+    if (dwForeThread != 0 && dwForeThread != dwCurThread) {
+        AttachThreadInput(dwCurThread, dwForeThread, FALSE);
+    }
 
     g_app.is_visible = TRUE;
     ResetSearch();
@@ -566,10 +589,6 @@ void ShowSwitcher(void) {
     } else {
         g_app.selected_index = 0;
     }
-
-    SetForegroundWindow(g_app.hMainWnd);
-    SetActiveWindow(g_app.hMainWnd);
-    SetFocus(g_app.hMainWnd);
 
     InvalidateRect(g_app.hMainWnd, NULL, FALSE);
 }
@@ -602,21 +621,31 @@ void SwitchToSelected(void) {
 
     if (hwndTarget && IsWindow(hwndTarget)) {
         HWND hCurFore = GetForegroundWindow();
-        DWORD dwForeThread = GetWindowThreadProcessId(hCurFore, NULL);
+        DWORD dwForeThread = hCurFore ? GetWindowThreadProcessId(hCurFore, NULL) : 0;
         DWORD dwCurThread = GetCurrentThreadId();
 
-        if (dwForeThread != dwCurThread) {
+        if (dwForeThread != 0 && dwForeThread != dwCurThread) {
             AttachThreadInput(dwCurThread, dwForeThread, TRUE);
         }
 
+        DWORD dwLockTimeout = 0;
+        SystemParametersInfoW(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &dwLockTimeout, 0);
+        SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, (void*)0, SPIF_SENDCHANGE);
+
         if (IsIconic(hwndTarget)) {
             ShowWindow(hwndTarget, SW_RESTORE);
+        } else {
+            ShowWindow(hwndTarget, SW_SHOW);
         }
 
-        SetForegroundWindow(hwndTarget);
         BringWindowToTop(hwndTarget);
+        SetForegroundWindow(hwndTarget);
+        SetActiveWindow(hwndTarget);
+        SetFocus(hwndTarget);
 
-        if (dwForeThread != dwCurThread) {
+        SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, (void*)(DWORD_PTR)dwLockTimeout, SPIF_SENDCHANGE);
+
+        if (dwForeThread != 0 && dwForeThread != dwCurThread) {
             AttachThreadInput(dwCurThread, dwForeThread, FALSE);
         }
     }
@@ -661,6 +690,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         KBDLLHOOKSTRUCT* pKbd = (KBDLLHOOKSTRUCT*)lParam;
         BOOL bAltPressed = (pKbd->flags & LLKHF_ALTDOWN) != 0 || (GetKeyState(VK_MENU) & 0x8000) != 0;
 
+        /* 1. Intercept Alt+Tab */
         if (pKbd->vkCode == VK_TAB && bAltPressed) {
             if (wParam == WM_SYSKEYDOWN || wParam == WM_KEYDOWN) {
                 g_app.alt_is_down = TRUE;
@@ -683,6 +713,83 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(g_app.hMainWnd, NULL, FALSE);
                 }
                 return 1;
+            }
+        }
+
+        /* 2. When TabMaster is VISIBLE: Intercept and consume all navigation keys! */
+        if (g_app.is_visible) {
+            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+                switch (pKbd->vkCode) {
+                    case VK_UP:
+                        if (g_app.selected_index > 0) {
+                            g_app.selected_index--;
+                            UpdateFilteredList();
+                            InvalidateRect(g_app.hMainWnd, NULL, FALSE);
+                        }
+                        return 1;
+
+                    case VK_DOWN:
+                        if (g_app.selected_index < g_app.filtered_count - 1) {
+                            g_app.selected_index++;
+                            UpdateFilteredList();
+                            InvalidateRect(g_app.hMainWnd, NULL, FALSE);
+                        }
+                        return 1;
+
+                    case VK_LEFT:
+                        SetMode(MODE_WINDOWS);
+                        return 1;
+
+                    case VK_RIGHT:
+                        SetMode(MODE_PROCESSES);
+                        return 1;
+
+                    case VK_RETURN:
+                        SwitchToSelected();
+                        return 1;
+
+                    case VK_DELETE:
+                        KillSelectedProcess();
+                        return 1;
+
+                    case VK_ESCAPE:
+                        HideSwitcher();
+                        return 1;
+
+                    case VK_BACK:
+                        if (g_app.search_query_len > 0) {
+                            g_app.search_query[--g_app.search_query_len] = L'\\0';
+                            UpdateFilteredList();
+                            InvalidateRect(g_app.hMainWnd, NULL, FALSE);
+                        }
+                        return 1;
+                }
+
+                if (!(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
+                    BYTE kbdState[256];
+                    GetKeyboardState(kbdState);
+                    WCHAR wch[4] = {0};
+                    if (ToUnicode(pKbd->vkCode, pKbd->scanCode, kbdState, wch, 4, 0) > 0) {
+                        if (wch[0] >= 32) {
+                            if (g_app.search_query_len < MAX_SEARCH_LEN - 1) {
+                                g_app.search_query[g_app.search_query_len++] = wch[0];
+                                g_app.search_query[g_app.search_query_len] = L'\\0';
+                                UpdateFilteredList();
+                                InvalidateRect(g_app.hMainWnd, NULL, FALSE);
+                            }
+                            return 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        /* 3. Check if Alt is released */
+        if (pKbd->vkCode == VK_MENU || pKbd->vkCode == VK_LMENU || pKbd->vkCode == VK_RMENU) {
+            if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+                if (g_app.is_visible && g_app.alt_is_down) {
+                    g_app.alt_is_down = FALSE;
+                }
             }
         }
     }
@@ -882,7 +989,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_ACTIVATE:
-            if (LOWORD(wParam) == WA_INACTIVE) HideSwitcher();
             return 0;
         case WM_KEYDOWN:
             switch (wParam) {
@@ -1095,7 +1201,7 @@ clean:
   {
     filename: 'build.bat',
     language: 'bat',
-    description: 'Skrypt wsadowy 1-click dla użytkowników w64devkit na Windows (poprawiony błąd & w echo)',
+    description: 'Skrypt wsadowy 1-click dla użytkowników w64devkit na Windows',
     size: '1.3 KB',
     content: `@echo off
 echo =======================================================
