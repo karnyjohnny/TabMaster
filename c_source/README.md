@@ -169,3 +169,5 @@ To start TabMaster automatically on Windows 7 boot:
 ## 📄 License
 
 This project is licensed under the **MIT License** — you are free to use, modify, distribute, and compile it for personal and commercial applications.
+
+

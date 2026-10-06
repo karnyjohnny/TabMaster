@@ -204,3 +204,4 @@ tabmaster/
 ## 📄 Licencja
 
 Projekt objęty jest licencją **MIT** — pełna swoboda modyfikacji, kompilacji i dystrybucji kodu źródłowego oraz plików binarnych.
+
