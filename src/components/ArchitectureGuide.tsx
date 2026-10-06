@@ -94,6 +94,38 @@ export const ArchitectureGuide: React.FC = () => {
         </div>
       </div>
 
+      {/* New Feature Highlight: Classic Alt-Release Behavior */}
+      <div className="bg-[#161616] border border-[#2A2A2A] p-4 space-y-3">
+        <div className="flex items-center space-x-2 text-white font-semibold">
+          <Zap size={16} className="text-[#0078D7]" />
+          <span>Mechanizm Klasycznego Alt+Tab: Puszczenie Alt Potwierdza Wybór</span>
+        </div>
+        <p className="text-neutral-400 font-sans leading-relaxed">
+          W natywnym Windows Alt+Tab użytkownik nie musi klikać myszą ani zatwierdzać Enterem – wystarczy puścić klawisz <kbd className="px-1.5 py-0.5 bg-[#252525] border border-[#3A3A3A] text-white font-mono">Alt</kbd>. 
+          TabMaster przechwytuje to zdarzenie na poziomie kernela za pomocą <code className="text-[#0078D7]">WH_KEYBOARD_LL</code>:
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 font-mono text-[11px]">
+          <div className="p-3 bg-[#121212] border border-[#242424] space-y-1">
+            <div className="text-blue-400 font-bold">1. Wciśnięcie Alt+Tab</div>
+            <div className="text-neutral-400 text-[10px]">
+              Otwiera okno i automatycznie zaznacza indeks 1 (poprzednią aplikację w kolejności Z-order).
+            </div>
+          </div>
+          <div className="p-3 bg-[#121212] border border-[#242424] space-y-1">
+            <div className="text-sky-400 font-bold">2. Trzymanie Alt + Tab / Strzałki</div>
+            <div className="text-neutral-400 text-[10px]">
+              Kolejne wciśnięcia Tab lub Strzałek przesuwają podświetlenie bez wysyłania klawiszy do aplikacji w tle.
+            </div>
+          </div>
+          <div className="p-3 bg-[#121212] border border-[#242424] space-y-1">
+            <div className="text-emerald-400 font-bold">3. Puszczenie klawisza Alt</div>
+            <div className="text-neutral-400 text-[10px]">
+              Przechwycenie WM_KEYUP dla VK_MENU natychmiast ukrywa okno i przełącza na wybraną aplikację!
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Compiler Optimization Matrix */}
       <div className="bg-[#161616] border border-[#2A2A2A] p-4 space-y-3">
         <div className="flex items-center space-x-2 text-white font-semibold">

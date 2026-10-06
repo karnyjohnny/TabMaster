@@ -581,6 +581,9 @@ void ShowSwitcher(void) {
         AttachThreadInput(dwCurThread, dwForeThread, FALSE);
     }
 
+    RefreshWindowCache();
+    UpdateFilteredList();
+
     g_app.is_visible = TRUE;
     ResetSearch();
 
@@ -622,11 +625,17 @@ void SwitchToSelected(void) {
     if (hwndTarget && IsWindow(hwndTarget)) {
         HWND hCurFore = GetForegroundWindow();
         DWORD dwForeThread = hCurFore ? GetWindowThreadProcessId(hCurFore, NULL) : 0;
+        DWORD dwTargetThread = GetWindowThreadProcessId(hwndTarget, NULL);
         DWORD dwCurThread = GetCurrentThreadId();
 
         if (dwForeThread != 0 && dwForeThread != dwCurThread) {
             AttachThreadInput(dwCurThread, dwForeThread, TRUE);
         }
+        if (dwTargetThread != 0 && dwTargetThread != dwCurThread) {
+            AttachThreadInput(dwCurThread, dwTargetThread, TRUE);
+        }
+
+        AllowSetForegroundWindow(ASFW_ANY);
 
         DWORD dwLockTimeout = 0;
         SystemParametersInfoW(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &dwLockTimeout, 0);
@@ -647,6 +656,9 @@ void SwitchToSelected(void) {
 
         if (dwForeThread != 0 && dwForeThread != dwCurThread) {
             AttachThreadInput(dwCurThread, dwForeThread, FALSE);
+        }
+        if (dwTargetThread != 0 && dwTargetThread != dwCurThread) {
+            AttachThreadInput(dwCurThread, dwTargetThread, FALSE);
         }
     }
 }
@@ -688,7 +700,7 @@ void ToggleMode(void) {
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT* pKbd = (KBDLLHOOKSTRUCT*)lParam;
-        BOOL bAltPressed = (pKbd->flags & LLKHF_ALTDOWN) != 0 || (GetKeyState(VK_MENU) & 0x8000) != 0;
+        BOOL bAltPressed = (pKbd->flags & LLKHF_ALTDOWN) != 0 || (GetKeyState(VK_MENU) & 0x8000) != 0 || g_app.alt_is_down;
 
         /* 1. Intercept Alt+Tab */
         if (pKbd->vkCode == VK_TAB && bAltPressed) {
@@ -716,7 +728,28 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             }
         }
 
-        /* 2. When TabMaster is VISIBLE: Intercept and consume all navigation keys! */
+        /* Consume Tab key release when switcher is visible */
+        if (pKbd->vkCode == VK_TAB && g_app.is_visible) {
+            if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+                return 1;
+            }
+        }
+
+        /* 2. THE KILLER FEATURE: Check if ALT key is RELEASED!
+              In classic Alt+Tab, releasing ALT immediately activates the highlighted window!
+              No need to press Enter or use the mouse. */
+        if (pKbd->vkCode == VK_MENU || pKbd->vkCode == VK_LMENU || pKbd->vkCode == VK_RMENU) {
+            if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+                if (g_app.is_visible && g_app.alt_is_down) {
+                    g_app.alt_is_down = FALSE;
+                    SwitchToSelected();
+                    return 1; /* Consumed Alt release! */
+                }
+                g_app.alt_is_down = FALSE;
+            }
+        }
+
+        /* 3. When TabMaster is VISIBLE: Intercept and consume all navigation keys! */
         if (g_app.is_visible) {
             if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
                 switch (pKbd->vkCode) {
@@ -735,6 +768,24 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                             InvalidateRect(g_app.hMainWnd, NULL, FALSE);
                         }
                         return 1;
+
+                    case VK_TAB: {
+                        BOOL bShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                        if (bShift) {
+                            g_app.selected_index--;
+                            if (g_app.selected_index < 0) {
+                                g_app.selected_index = (g_app.filtered_count > 0) ? g_app.filtered_count - 1 : 0;
+                            }
+                        } else {
+                            g_app.selected_index++;
+                            if (g_app.selected_index >= g_app.filtered_count) {
+                                g_app.selected_index = 0;
+                            }
+                        }
+                        UpdateFilteredList();
+                        InvalidateRect(g_app.hMainWnd, NULL, FALSE);
+                        return 1;
+                    }
 
                     case VK_LEFT:
                         SetMode(MODE_WINDOWS);
@@ -765,7 +816,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                         return 1;
                 }
 
-                if (!(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
+                if (!(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) && !g_app.alt_is_down) {
                     BYTE kbdState[256];
                     GetKeyboardState(kbdState);
                     WCHAR wch[4] = {0};
@@ -780,15 +831,6 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                             return 1;
                         }
                     }
-                }
-            }
-        }
-
-        /* 3. Check if Alt is released */
-        if (pKbd->vkCode == VK_MENU || pKbd->vkCode == VK_LMENU || pKbd->vkCode == VK_RMENU) {
-            if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
-                if (g_app.is_visible && g_app.alt_is_down) {
-                    g_app.alt_is_down = FALSE;
                 }
             }
         }
@@ -965,7 +1007,7 @@ void RenderUI(HDC hdcReal, const RECT* rcClient) {
     RECT rcFooterText = { 14, h - UI_FOOTER_HEIGHT, w - 14, h };
     SelectObject(hdc, g_app.hFontSmall);
     SetTextColor(hdc, COLOR_TEXT_MUTED);
-    DrawTextW(hdc, L"↑↓ navigate  ·  Enter switch  ·  ←→ tabs  ·  Del / MMB kill process  ·  Esc close", -1,
+    DrawTextW(hdc, L"Release Alt / Enter: switch  ·  Tab / ↑↓: navigate  ·  ←→: tabs  ·  Del / MMB: kill  ·  Esc: cancel", -1,
               &rcFooterText, DT_SINGLELINE | DT_VCENTER);
 
     BitBlt(hdcReal, 0, 0, w, h, hdc, 0, 0, SRCCOPY);
@@ -1501,6 +1543,17 @@ Przełączanie pomiędzy dwoma głównymi trybami następuje błyskawicznie za p
 - Lista wszystkich uruchomionych procesów w systemie, automatycznie **posortowana malejąco według zużycia pamięci RAM**.
 - Kolorystyczne oznaczanie obciążenia (Zielony < 100 MB, Bursztynowy 100-300 MB, Czerwony > 300 MB).
 - Pozwala w sekundę zlokalizować ukryty wyciek pamięci.
+
+### ⌨️ Skróty Klawiszowe i Nawigacja (Classic Alt+Tab)
+- **Alt + Tab**: Otwórz przełącznik / przewiń do kolejnego okna (automatycznie zaznacza indeks 1 - poprzednie okno)
+- **Puszczenie klawisza Alt**: **Natychmiastowe przełączenie na wybrane okno** (dokładnie jak klasyczny Alt+Tab w Windows, bez wciskania Enter!)
+- **Tab / Strzałka w dół (↓)**: Przewiń do następnego okna / procesu
+- **Shift + Tab / Strzałka w górę (↑)**: Przewiń do poprzedniego okna / procesu
+- **Strzałki lewo/prawo (← / →)**: Natychmiastowe przełączenie trybów (Windows ↔ Processes)
+- **Enter / Kliknięcie LPM**: Aktywuj wybrane okno
+- **Delete / Kliknięcie Środkowym Przyciskiem (MMB)**: **Kill Switch** – natychmiastowe zabicie procesu (TerminateProcess)
+- **Wpisywanie znaków**: Filtrowanie listy w czasie rzeczywistym
+- **Esc**: Anuluj i zamknij okno bez przełączania
 
 ---
 

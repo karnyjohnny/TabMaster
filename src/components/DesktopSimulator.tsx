@@ -21,6 +21,7 @@ export const DesktopSimulator: React.FC = () => {
   const [processes, setProcesses] = useState<MockItem[]>(INITIAL_PROCESSES);
   const [mode, setMode] = useState<'windows' | 'processes'>('windows');
   const [isOpen, setIsOpen] = useState(false);
+  const [altIsHeld, setAltIsHeld] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeWindow, setActiveWindow] = useState<MockItem>(INITIAL_WINDOWS[0]);
@@ -41,24 +42,6 @@ export const DesktopSimulator: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Global keydown listener for real Alt+Tab
-  useEffect(() => {
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      // Catch Alt+Tab or ` key as quick shortcut
-      if ((e.altKey && e.code === 'Tab') || (e.code === 'Backquote' && !isOpen)) {
-        e.preventDefault();
-        setIsOpen((prev) => !prev);
-        if (!isOpen) {
-          setSearchQuery('');
-          setSelectedIndex(1);
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [isOpen]);
-
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
@@ -74,12 +57,78 @@ export const DesktopSimulator: React.FC = () => {
     return item.title.toLowerCase().includes(q) || item.procName.toLowerCase().includes(q);
   });
 
-  // Switch to selected window
+  // Switch to selected window (Classic Alt+Tab Z-order update)
   const handleSwitchToItem = (item: MockItem) => {
     setActiveWindow(item);
     setIsOpen(false);
+    setAltIsHeld(false);
+
+    // In Windows 7, bringing a window to the foreground places it at index 0 (top of Z-order)
+    // The previous window becomes index 1, so the next Alt+Tab toggles back instantly!
+    setWindows((prev) => {
+      const target = prev.find((w) => w.pid === item.pid);
+      if (!target) return prev;
+      const rest = prev.filter((w) => w.pid !== item.pid);
+      return [target, ...rest];
+    });
+
     showToast(`Aktywowano okno: "${item.title}" (PID ${item.pid}) poprzez SetForegroundWindow`);
   };
+
+  // Global keydown & keyup listeners for authentic Alt+Tab behavior
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const isAltTab = (e.altKey && e.code === 'Tab') || (e.altKey && e.key === 'Tab');
+      const isBackquote = e.code === 'Backquote' || e.key === '`';
+
+      if (isAltTab || isBackquote) {
+        e.preventDefault();
+        setAltIsHeld(true);
+
+        if (!isOpen) {
+          setIsOpen(true);
+          setSearchQuery('');
+          // Select 2nd window by default (the previous app)
+          setSelectedIndex(1);
+        } else {
+          // Advance selection while holding Alt
+          const len = filteredItems.length;
+          if (len > 0) {
+            if (e.shiftKey) {
+              setSelectedIndex((prev) => (prev > 0 ? prev - 1 : len - 1));
+            } else {
+              setSelectedIndex((prev) => (prev < len - 1 ? prev + 1 : 0));
+            }
+          }
+        }
+      }
+    };
+
+    const handleGlobalKeyUp = (e: KeyboardEvent) => {
+      // THE KILLER FEATURE: Releasing ALT automatically confirms and switches!
+      if (e.key === 'Alt' || e.code === 'AltLeft' || e.code === 'AltRight') {
+        if (isOpen && altIsHeld) {
+          e.preventDefault();
+          setAltIsHeld(false);
+          const target = filteredItems[selectedIndex];
+          if (target) {
+            handleSwitchToItem(target);
+          } else {
+            setIsOpen(false);
+          }
+        } else {
+          setAltIsHeld(false);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    window.addEventListener('keyup', handleGlobalKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+      window.removeEventListener('keyup', handleGlobalKeyUp);
+    };
+  }, [isOpen, altIsHeld, filteredItems, selectedIndex]);
 
   // Terminate process (Kill switch)
   const handleKillProcess = (item: MockItem) => {
@@ -130,16 +179,57 @@ export const DesktopSimulator: React.FC = () => {
         </div>
 
         <div className="flex items-center flex-wrap gap-2">
+          {/* Alt Status Indicator */}
+          <div className="flex items-center px-2 py-1 bg-[#141414] border border-[#2D2D2D] rounded-xs text-[11px] font-mono">
+            <span className="text-[#888888] mr-1.5">Klawisz Alt:</span>
+            {altIsHeld ? (
+              <span className="text-blue-400 font-bold flex items-center gap-1 animate-pulse">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-400 inline-block"></span>
+                WCIŚNIĘTY (Puść = Przełącz!)
+              </span>
+            ) : (
+              <span className="text-neutral-500">Zwolniony</span>
+            )}
+          </div>
+
           <button
             onClick={() => {
-              setIsOpen(true);
-              setSearchQuery('');
-              setSelectedIndex(1);
+              if (!isOpen) {
+                setIsOpen(true);
+                setSearchQuery('');
+                setSelectedIndex(1);
+                setAltIsHeld(true);
+              } else {
+                const len = filteredItems.length;
+                if (len > 0) {
+                  setSelectedIndex((prev) => (prev < len - 1 ? prev + 1 : 0));
+                }
+                setAltIsHeld(true);
+              }
             }}
+            title="Wciśnij Alt+Tab lub klawisz tyldy (~) na klawiaturze"
             className="px-3 py-1.5 bg-[#0078D7] hover:bg-[#0063b1] text-white font-medium flex items-center gap-1.5 transition-colors shadow-xs"
           >
             <Play size={13} />
-            <span>Wywołaj Alt+Tab (Hook)</span>
+            <span>{!isOpen ? "Alt+Tab (Otwórz)" : "Tab (Kolejne okno)"}</span>
+          </button>
+
+          <button
+            onClick={() => {
+              if (isOpen && filteredItems[selectedIndex]) {
+                handleSwitchToItem(filteredItems[selectedIndex]);
+              }
+            }}
+            disabled={!isOpen}
+            title="Symuluje natychmiastowe puszczenie klawisza Alt"
+            className={`px-3 py-1.5 font-medium flex items-center gap-1.5 transition-colors border ${
+              isOpen
+                ? "bg-emerald-950/70 hover:bg-emerald-900/90 text-emerald-300 border-emerald-700/60 shadow-xs cursor-pointer"
+                : "bg-[#202020] text-neutral-500 border-[#303030] cursor-not-allowed"
+            }`}
+          >
+            <Zap size={13} className={isOpen ? "text-emerald-400" : "text-neutral-500"} />
+            <span>Puść klawisz Alt (Potwierdź)</span>
           </button>
 
           <button
@@ -147,7 +237,7 @@ export const DesktopSimulator: React.FC = () => {
             className="px-3 py-1.5 bg-amber-950/40 hover:bg-amber-900/60 text-amber-300 border border-amber-800/50 flex items-center gap-1.5 transition-colors"
           >
             <AlertCircle size={13} />
-            <span>Zasymuluj Wyciek RAM (Python)</span>
+            <span>Wyciek RAM (Python)</span>
           </button>
 
           <button
@@ -277,6 +367,7 @@ export const DesktopSimulator: React.FC = () => {
           onSearchChange={setSearchQuery}
           onSwitchToItem={handleSwitchToItem}
           onKillProcess={handleKillProcess}
+          altIsHeld={altIsHeld}
         />
 
         {/* Windows 7 Aero Taskbar (Bottom) */}

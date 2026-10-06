@@ -57,15 +57,17 @@ Toggle seamlessly between two modes with the **Left / Right arrow keys (← / �
 
 | Key / Mouse Action | Action |
 | :--- | :--- |
-| **Alt + Tab** | Activate TabMaster switcher / cycle next item |
+| **Alt + Tab** | Activate TabMaster switcher / cycle next item (preselects index 1) |
+| **Release Alt** | **Classic Switch**: Instantly activates highlighted window & closes switcher |
 | **Alt + Shift + Tab** | Cycle previous item |
-| **↑ / ↓** | Move selection up / down |
+| **Tab** / **↓** | Move selection down |
+| **Shift + Tab** / **↑** | Move selection up |
 | **← / →** | Toggle between **Windows** mode and **Processes** mode |
 | **Enter** or **Left-Click** | Switch to selected window (`SetForegroundWindow`) |
 | **Delete** or **Middle-Click (MMB)** | **Instant Kill**: Terminate highlighted process |
 | **Type any letter** | Real-time substring filter search in title and exe name |
 | **Backspace** | Delete search character |
-| **Esc** or click outside | Dismiss switcher |
+| **Esc** or click outside | Dismiss switcher (cancels without switching) |
 
 ---
 

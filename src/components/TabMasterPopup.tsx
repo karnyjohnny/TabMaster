@@ -27,6 +27,7 @@ interface TabMasterPopupProps {
   onSearchChange: (query: string) => void;
   onSwitchToItem: (item: MockItem) => void;
   onKillProcess: (item: MockItem) => void;
+  altIsHeld?: boolean;
 }
 
 export const TabMasterPopup: React.FC<TabMasterPopupProps> = ({
@@ -40,7 +41,8 @@ export const TabMasterPopup: React.FC<TabMasterPopupProps> = ({
   searchQuery,
   onSearchChange,
   onSwitchToItem,
-  onKillProcess
+  onKillProcess,
+  altIsHeld = false
 }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -53,6 +55,24 @@ export const TabMasterPopup: React.FC<TabMasterPopupProps> = ({
       }, 30);
     }
   }, [isOpen]);
+
+  // Window-level keyup listener: Releasing ALT automatically activates selected window!
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleWindowKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Alt' || e.code === 'AltLeft' || e.code === 'AltRight') {
+        if (items[selectedIndex]) {
+          onSwitchToItem(items[selectedIndex]);
+        } else {
+          onClose();
+        }
+      }
+    };
+
+    window.addEventListener('keyup', handleWindowKeyUp);
+    return () => window.removeEventListener('keyup', handleWindowKeyUp);
+  }, [isOpen, items, selectedIndex, onSwitchToItem, onClose]);
 
   // Keep selected row in view
   useEffect(() => {
@@ -324,9 +344,11 @@ export const TabMasterPopup: React.FC<TabMasterPopupProps> = ({
         {/* Footer: Shortcut Cheat Sheet */}
         <div className="h-8 px-3 bg-[#1C1C1C] border-t border-[#2D2D2D] flex items-center justify-between text-[11px] text-[#888888] font-mono">
           <div className="flex items-center space-x-2">
-            <span>↑↓ navigate</span>
+            <span className={altIsHeld ? "text-[#0078D7] font-bold animate-pulse" : "text-[#70b4f8] font-medium"}>
+              {altIsHeld ? "⚡ Puść Alt: przełącz!" : "Puść Alt / Enter: przełącz"}
+            </span>
             <span>·</span>
-            <span className="text-[#a0c0e0]">Enter switch</span>
+            <span>Tab / ↑↓ navigate</span>
             <span>·</span>
             <span>←→ tabs</span>
             <span>·</span>
@@ -336,6 +358,11 @@ export const TabMasterPopup: React.FC<TabMasterPopupProps> = ({
           </div>
 
           <div className="hidden sm:flex items-center space-x-2 text-[10px] text-[#666666]">
+            {altIsHeld && (
+              <span className="px-1.5 py-0.2 bg-blue-950/80 text-blue-300 border border-blue-700/60 font-semibold">
+                ALT WCIŚNIĘTY
+              </span>
+            )}
             <span>GDI Double-Buffered</span>
             <span>·</span>
             <span className="text-emerald-500 font-semibold">0.08ms blit</span>
